@@ -1,0 +1,6 @@
+worker-node*
+controller-node*
+meta-data
+user-data
+network-config
+ubuntu*
