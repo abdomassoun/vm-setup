@@ -64,6 +64,7 @@ disable_root: false
 packages:
   - qemu-guest-agent
   - criu
+  - nfs-kernel-server
   - nfs-common
   - curl
   - apt-transport-https
@@ -130,12 +131,23 @@ runcmd:
       cp -i /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
       chown ubuntu:ubuntu /home/ubuntu/.kube/config
     fi
+  
+  # Setup NFS server on controller
+  - |
+    if [ "$(hostname)" = "controller-node" ]; then
+      mkdir -p /mnt/nfs
+      chown nobody:nogroup /mnt/nfs
+      echo "/mnt/nfs 192.168.122.0/24(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
+      exportfs -a
+      systemctl enable --now nfs-server
+    fi
 
   # Mount NFS (replace with your server IP)
   - mkdir -p /mnt/nfs
-  - mount -t nfs 62.171.148.24 :/mnt/nfs /mnt/nfs
-  - echo '62.171.148.24 :/mnt/nfs /mnt/nfs nfs defaults 0 0' >> /etc/fstab
+  - mount -t nfs 192.168.122.101 :/mnt/nfs /mnt/nfs
+  - echo '192.168.122.101 :/mnt/nfs /mnt/nfs nfs defaults 0 0' >> /etc/fstab
 
+  # Add hostnames to /etc/hosts
   - echo "192.168.122.101  controller-node" >> /etc/hosts
   - echo "192.168.122.102  worker-node-1" >> /etc/hosts
   - echo "192.168.122.103  worker-node-2" >> /etc/hosts
@@ -154,7 +166,6 @@ EOF
         --vcpus $VCPUS \
         --disk path=$DISK_IMG,format=qcow2 \
         --disk path=$CLOUD_INIT_ISO,device=cdrom \
-        --os-type linux \
         --os-variant ubuntu20.04 \
         --virt-type kvm \
         --graphics none \
