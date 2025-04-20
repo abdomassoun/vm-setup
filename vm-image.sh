@@ -151,6 +151,14 @@ runcmd:
   - echo "192.168.122.101  controller-node" >> /etc/hosts
   - echo "192.168.122.102  worker-node-1" >> /etc/hosts
   - echo "192.168.122.103  worker-node-2" >> /etc/hosts
+
+  # Install Helm 
+  - curl https://baltocdn.com/helm/signing.asc | gpg --dearmor -o /usr/share/keyrings/helm.gpg
+  - apt-get install -y apt-transport-https
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" > /etc/apt/sources.list.d/helm-stable-debian.list
+  - apt-get update
+  - apt-get install -y helm
+
 EOF
 # Meta-data (can be minimal)
     echo "instance-id: $VM_NAME; local-hostname: $VM_NAME" > meta-data
