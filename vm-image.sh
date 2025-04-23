@@ -6,7 +6,7 @@ BASE_IMG="ubuntu-22.04-server-cloudimg-amd64.img"
 BASE_URL="https://cloud-images.ubuntu.com/releases/22.04/release"
 MEMORY=2048  # MB
 VCPUS=2
-DISK_SIZE=10G
+DISK_SIZE=15G
 IP_BASE="192.168.122"
 IP_START=100
 
@@ -99,16 +99,10 @@ runcmd:
 
   # Apply sysctl settings
   - sysctl --system
-  # Disable swap
 
+  # Disable swap
   - swapoff -a
   - sed -i '/ swap / s/^/#/' /etc/fstab
-
-  # Containerd setup
-  - mkdir -p /etc/containerd
-  - containerd config default | tee /etc/containerd/config.toml
-  - systemctl restart containerd
-  - systemctl enable containerd
 
   # Create keyring folder if it doesn't exist
   - mkdir -p -m 755 /etc/apt/keyrings
@@ -123,6 +117,13 @@ runcmd:
   - apt-get update
   - apt-get install -y kubelet kubeadm kubectl
   - apt-mark hold kubelet kubeadm kubectl
+  # Containerd setup
+  - mkdir -p /etc/containerd
+  - containerd config default | tee /etc/containerd/config.toml
+  - systemctl restart containerd
+  - systemctl enable containerd
+  - systemctl enable containerd
+  - kubeadm reset
 
   # Optional: Auto-configure kubectl if hostname is 'controller'
   - |
