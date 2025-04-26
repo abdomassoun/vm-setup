@@ -117,9 +117,12 @@ runcmd:
   - apt-get update
   - apt-get install -y kubelet kubeadm kubectl
   - apt-mark hold kubelet kubeadm kubectl
-  # Containerd setup
+
+  # Containerd setup for Kubernetes
   - mkdir -p /etc/containerd
   - containerd config default | tee /etc/containerd/config.toml
+  - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+  - sed -i 's|sandbox_image = "registry.k8s.io/pause:3.8"|sandbox_image = "registry.k8s.io/pause:3.10"|' /etc/containerd/config.toml
   - systemctl restart containerd
   - systemctl enable containerd
   - systemctl enable containerd
@@ -127,26 +130,27 @@ runcmd:
 
   # Optional: Auto-configure kubectl if hostname is 'controller'
   - |
-    if [ "$(hostname)" = "controller" ]; then
+    if [ "${VM_NAME}" = "controller-node" ]; then
+      kubeadm init --pod-network-cidr=10.244.0.0/16 | tee kubeadm-init.out
       mkdir -p /home/ubuntu/.kube
       cp -i /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
       chown ubuntu:ubuntu /home/ubuntu/.kube/config
+      kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
     fi
   
-  # Setup NFS server on controller
+  # Setup NFS server on controller and mount on worker nodes
+  - mkdir -p /mnt/nfs
   - |
-    if [ "$(hostname)" = "controller-node" ]; then
-      mkdir -p /mnt/nfs
+    if [ "${VM_NAME}" = "controller-node" ]; then
       chown nobody:nogroup /mnt/nfs
       echo "/mnt/nfs 192.168.122.0/24(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
       exportfs -a
+      systemctl restart nfs-kernel-server
       systemctl enable --now nfs-server
+    else
+      echo '192.168.122.101:/mnt/nfs /mnt/nfs nfs defaults 0 0' >> /etc/fstab
+      mount -t nfs 192.168.122.101:/mnt/nfs /mnt/nfs
     fi
-
-  # Mount NFS (replace with your server IP)
-  - mkdir -p /mnt/nfs
-  - mount -t nfs 192.168.122.101 :/mnt/nfs /mnt/nfs
-  - echo '192.168.122.101 :/mnt/nfs /mnt/nfs nfs defaults 0 0' >> /etc/fstab
 
   # Add hostnames to /etc/hosts
   - echo "192.168.122.101  controller-node" >> /etc/hosts
