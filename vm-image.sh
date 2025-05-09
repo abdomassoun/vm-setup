@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VM_COUNT=2
+VM_COUNT=3
 VM_NAME_PREFIX="testvm"
 BASE_IMG="ubuntu-22.04-server-cloudimg-amd64.img"
 BASE_URL="https://cloud-images.ubuntu.com/releases/22.04/release"
@@ -32,7 +32,7 @@ for i in $(seq 1 $VM_COUNT); do
     echo "[*] Creating disk for $VM_NAME"
     qemu-img create -f qcow2 -b $BASE_IMG -F qcow2 $DISK_IMG $DISK_SIZE
 
-        echo "[*] Generating network-config for $VM_NAME $VM_IP"
+    echo "[*] Generating network-config for $VM_NAME $VM_IP"
     cat > network-config <<EOF
 version: 2
 ethernets:
@@ -45,7 +45,7 @@ ethernets:
       addresses: [8.8.8.8]
 EOF
 
-        # Cloud-init user-data
+    # Cloud-init user-data
 cat > user-data <<EOF
 #cloud-config
 hostname: ${VM_NAME}
@@ -71,7 +71,12 @@ packages:
   - ca-certificates
   - gnupg
   - lsb-release
-  - containerd
+  - rsync
+  - runc
+  - skopeo
+  - umoci
+  - software-properties-common
+  - buildah
 
 write_files:
   - path: /etc/sysctl.d/99-k8s.conf
@@ -89,9 +94,6 @@ write_files:
       192.168.122.103  worker-node-2
 
 bootcmd:
-  - cloud-init-per once ifdown ifdown ens3
-  - cloud-init-per once bugfix rm /run/network/interfaces.d/ens3
-  - cloud-init-per once ifup ifup ens3
   - modprobe br_netfilter
 
 runcmd:
@@ -107,37 +109,51 @@ runcmd:
   # Create keyring folder if it doesn't exist
   - mkdir -p -m 755 /etc/apt/keyrings
 
-  # Add Kubernetes GPG key and repo (v1.32)
+  # Add Kubernetes GPG key and repo
   - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-  - chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-  - echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /' > /etc/apt/sources.list.d/kubernetes.list
-  - chmod 644 /etc/apt/sources.list.d/kubernetes.list
+  - echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
 
-  # Install Kubernetes tools
+  # Add CRI-O GPG key and repo
+  - curl -fsSL https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.29/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg
+  - echo "deb [signed-by=/etc/apt/keyrings/cri-o-apt-keyring.gpg] https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.29/deb/ /" > /etc/apt/sources.list.d/cri-o.list
+
+  # Install Kubernetes + CRI-O
   - apt-get update
-  - apt-get install -y kubelet kubeadm kubectl
+  - apt-get install -y cri-o kubelet kubeadm kubectl
   - apt-mark hold kubelet kubeadm kubectl
 
-  # Containerd setup for Kubernetes
-  - mkdir -p /etc/containerd
-  - containerd config default | tee /etc/containerd/config.toml
-  - sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
-  - sed -i 's|sandbox_image = "registry.k8s.io/pause:3.8"|sandbox_image = "registry.k8s.io/pause:3.10"|' /etc/containerd/config.toml
-  - systemctl restart containerd
-  - systemctl enable containerd
-  - systemctl enable containerd
-  - kubeadm reset
+  # Enable CRI-O
+  - systemctl daemon-reexec
+  - systemctl enable crio
+  - systemctl start crio
 
-  # Optional: Auto-configure kubectl if hostname is 'controller'
+  # Patch CRI-O runtime configuration
+  - |
+    sed -i 's/^default_runtime = "crun"/default_runtime = "runc"/' /etc/crio/crio.conf.d/10-crio.conf
+    awk '/^\[crio\.runtime\]/ {print; print "enable_criu_support = true\n" "drop_infra_containers = true"; next}1' /etc/crio/crio.conf.d/10-crio.conf > /tmp/10-crio.conf && mv /tmp/10-crio.conf /etc/crio/crio.conf.d/10-crio.conf
+  - systemctl restart crio
+
+  # Reset kubeadm
+  - kubeadm reset -f || true
+  - apt-mark hold kubelet kubeadm kubectl
+
+  # If controller node, initialize cluster
   - |
     if [ "${VM_NAME}" = "controller-node" ]; then
-      kubeadm init --pod-network-cidr=10.244.0.0/16 | tee kubeadm-init.out
+      kubeadm init --pod-network-cidr=10.244.0.0/16 --cri-socket=unix:///var/run/crio/crio.sock | tee /home/ubuntu/kubeadm-init.out
       mkdir -p /home/ubuntu/.kube
       cp -i /etc/kubernetes/admin.conf /home/ubuntu/.kube/config
       chown ubuntu:ubuntu /home/ubuntu/.kube/config
       kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
     fi
-  
+
+  # Enable checkpointing in Kubelet
+  - |
+    sed -i 's|^KUBELET_KUBEADM_ARGS=.*|KUBELET_KUBEADM_ARGS="--container-runtime-endpoint=unix:///var/run/crio/crio.sock --feature-gates=ContainerCheckpoint=true --pod-infra-container-image=registry.k8s.io/pause:3.9"|' /var/lib/kubelet/kubeadm-flags.env
+  - systemctl daemon-reexec
+  - systemctl restart crio
+  - systemctl restart kubelet
+
   # Setup NFS server on controller and mount on worker nodes
   - mkdir -p /mnt/nfs
   - |
@@ -159,19 +175,14 @@ runcmd:
 
   # Install Helm 
   - curl https://baltocdn.com/helm/signing.asc | gpg --dearmor -o /usr/share/keyrings/helm.gpg
-  - apt-get install -y apt-transport-https
-  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" > /etc/apt/sources.list.d/helm-stable-debian.list
+  - echo "deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" > /etc/apt/sources.list.d/helm-stable-debian.list
   - apt-get update
   - apt-get install -y helm
-
 EOF
-# Meta-data (can be minimal)
-    echo "instance-id: $VM_NAME; local-hostname: $VM_NAME" > meta-data
 
-    # Create ISO with cloud-init
+    echo "instance-id: $VM_NAME; local-hostname: $VM_NAME" > meta-data
     cloud-localds --network-config=network-config "$CLOUD_INIT_ISO" user-data meta-data
 
-    # Start the VM
     echo "[*] Starting VM $VM_NAME"
     virt-install --connect qemu:///system \
         --name $VM_NAME \
