@@ -77,6 +77,7 @@ packages:
   - umoci
   - software-properties-common
   - buildah
+  - protobuf-compiler
 
 write_files:
   - path: /etc/sysctl.d/99-k8s.conf
@@ -153,6 +154,7 @@ runcmd:
   - systemctl daemon-reexec
   - systemctl restart crio
   - systemctl restart kubelet
+  - mkdir -p /tmp/restore/diff && chmod -R 755 /tmp/restore
 
   # Setup NFS server on controller and mount on worker nodes
   - mkdir -p /mnt/nfs
@@ -178,6 +180,24 @@ runcmd:
   - echo "deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" > /etc/apt/sources.list.d/helm-stable-debian.list
   - apt-get update
   - apt-get install -y helm
+
+  # Install Go globally and set PATH
+  - echo "Installing Go"
+  - curl -OL https://golang.org/dl/go1.22.3.linux-amd64.tar.gz
+  - rm -rf /usr/local/go
+  - tar -C /usr/local -xzf go1.22.3.linux-amd64.tar.gz
+  - echo 'export PATH=$PATH:/usr/local/go/bin' > /etc/profile.d/golang.sh
+  - chmod +x /etc/profile.d/golang.sh
+
+  # Clone migration repo (with submodules) and set executable permissions
+  - |
+    if git clone --recurse-submodules https://github.com/abdomassoun/container-live-migration.git /home/ubuntu/container-live-migration; then
+      chmod -R 755 /home/ubuntu/container-live-migration/
+    else
+      echo "Failed to clone the repository with submodules" >&2
+      exit 1
+    fi
+
 EOF
 
     echo "instance-id: $VM_NAME; local-hostname: $VM_NAME" > meta-data
