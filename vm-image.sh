@@ -110,6 +110,15 @@ runcmd:
   # Create keyring folder if it doesn't exist
   - mkdir -p -m 755 /etc/apt/keyrings
 
+  # Insert delay rule via tc on controller and worker-node-1
+  - |
+    if [ "${VM_NAME}" = "controller-node" ] || [ "${VM_NAME}" = "worker-node-1" ]; then
+      apt-get install -y iproute2
+      tc qdisc add dev enp1s0 root handle 1: prio
+      tc qdisc add dev enp1s0 parent 1:3 handle 30: netem delay 10ms
+      tc filter add dev enp1s0 protocol ip parent 1:0 prio 3 u32 match ip dst 192.168.122.103 flowid 1:3
+    fi
+
   # Add Kubernetes GPG key and repo
   - curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
   - echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /" > /etc/apt/sources.list.d/kubernetes.list
