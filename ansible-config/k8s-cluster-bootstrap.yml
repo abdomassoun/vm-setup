@@ -1,0 +1,53 @@
+---
+- name: Get join command from controller node
+  hosts: controller
+  become: true
+  tasks:
+    - name: Initialize Kubernetes cluster
+      command: >
+        kubeadm init
+        --pod-network-cidr=10.244.0.0/16
+        --cri-socket=unix:///var/run/crio/crio.sock
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_init
+      become: true
+
+    - name: Apply Flannel CNI plugin
+      command: kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml --kubeconfig=/etc/kubernetes/admin.conf
+
+    - name: Get kubeadm join command
+      command: kubeadm token create --print-join-command
+      register: join_command
+      changed_when: false
+
+- name: Join worker nodes to the cluster
+  hosts: workers
+  become: true
+  tasks:
+    - name: Check if node already joined
+      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get node {{ inventory_hostname }}
+      delegate_to: "{{ groups['controller'][0] }}"
+      register: node_status
+      ignore_errors: true
+
+    - name: Join the node to the Kubernetes cluster
+      command: "{{ hostvars[groups['controller'][0]].join_command.stdout }} --cri-socket /var/run/crio/crio.sock --ignore-preflight-errors=NumCPU,Mem"
+      when: node_status.rc != 0
+
+    - name: Label the node as worker
+      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf label node {{ inventory_hostname }} node-role.kubernetes.io/worker=worker
+      delegate_to: "{{ groups['controller'][0] }}"
+
+    - name: Ensure NFS utils are installed
+      package:
+        name: nfs-common
+        state: present
+
+    - name: Mount NFS volume
+      mount:
+        src: "192.168.122.101:/mnt/nfs"
+        path: "/mnt/nfs"
+        fstype: nfs
+        state: mounted
+

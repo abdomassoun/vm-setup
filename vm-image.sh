@@ -20,7 +20,7 @@ for i in $(seq 1 $VM_COUNT); do
         VM_NAME="controller-node"
     else
         INDEX=$((i - 1))
-        VM_NAME="worker-node${INDEX}"
+        VM_NAME="worker-node-${INDEX}"
     fi
 
     IP=$((IP_START + i ))

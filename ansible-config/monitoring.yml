@@ -1,0 +1,26 @@
+- name: Deploy Prometheus + Grafana stack
+  hosts: controller
+  become: true
+  tasks:
+    - name: Add Prometheus Helm repo
+      command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+      args:
+        creates: /root/.cache/helm/repository/prometheus-community-index.yaml
+
+    - name: Update Helm repos
+      command: helm repo update
+
+    - name: Check if kube-prometheus release exists
+      command: helm status kube-prometheus -n monitoring --kubeconfig=/etc/kubernetes/admin.conf
+      register: prometheus_status
+      ignore_errors: true
+
+    - name: Install kube-prometheus-stack
+      command: >
+        helm install kube-prometheus prometheus-community/kube-prometheus-stack
+        -n monitoring --create-namespace
+        --kubeconfig=/etc/kubernetes/admin.conf
+      when: prometheus_status.rc != 0
+      args:
+        creates: /root/.cache/helm/repository/kube-prometheus-stack
+
